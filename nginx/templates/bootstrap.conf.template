@@ -1,0 +1,11 @@
+log_format news_blog '$remote_addr [$time_local] "$request_method $uri $server_protocol" $status $body_bytes_sent';
+access_log /var/log/nginx/access.log news_blog;
+server_tokens off;
+server { listen 8081; server_name localhost; location = /nginx-health { access_log off; return 200 "ok"; } }
+server { listen 80 default_server; server_name _; return 444; }
+server {
+    listen 80;
+    server_name ${DOMAIN};
+    location ^~ /.well-known/acme-challenge/ { root /var/www/certbot; try_files $uri =404; }
+    location / { default_type text/plain; return 503 "TLS certificate setup in progress.\n"; }
+}

@@ -1,0 +1,118 @@
+name: news-blog-prod
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "3"
+services:
+  db:
+    image: postgres:17.11-bookworm
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+      POSTGRES_APP_USER: ${POSTGRES_APP_USER:?Set POSTGRES_APP_USER}
+      POSTGRES_APP_PASSWORD: ${POSTGRES_APP_PASSWORD:?Set POSTGRES_APP_PASSWORD}
+      DEMO_MODE: "False"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./postgres/10-app-user.sh:/docker-entrypoint-initdb.d/10-app-user.sh:ro
+    networks: [database]
+    healthcheck:
+      test: [CMD-SHELL, 'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+    logging: *logging
+  backend:
+    build: ./backend
+    environment:
+      DJANGO_SECRET_KEY: ${DJANGO_SECRET_KEY:?Set DJANGO_SECRET_KEY}
+      DJANGO_DEBUG: "False"
+      DEMO_MODE: "False"
+      DJANGO_ALLOWED_HOSTS: ${DJANGO_ALLOWED_HOSTS:?Set DJANGO_ALLOWED_HOSTS}
+      COOKIE_SECURE: "True"
+      CSRF_TRUSTED_ORIGINS: ${CSRF_TRUSTED_ORIGINS:?Set HTTPS origins}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-}
+      SECURE_SSL_REDIRECT: "True"
+      TRUST_PROXY_SSL_HEADER: "True"
+      SECURE_HSTS_SECONDS: ${SECURE_HSTS_SECONDS:-3600}
+      SECURE_HSTS_INCLUDE_SUBDOMAINS: ${SECURE_HSTS_INCLUDE_SUBDOMAINS:-False}
+      SECURE_HSTS_PRELOAD: ${SECURE_HSTS_PRELOAD:-False}
+      USE_DATABASE_CACHE: "True"
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_APP_USER: ${POSTGRES_APP_USER}
+      POSTGRES_APP_PASSWORD: ${POSTGRES_APP_PASSWORD}
+      POSTGRES_HOST: db
+      POSTGRES_PORT: "5432"
+      GUNICORN_WORKERS: ${GUNICORN_WORKERS:-2}
+      GUNICORN_TIMEOUT: ${GUNICORN_TIMEOUT:-60}
+    command: [sh, /app/entrypoint.prod.sh]
+    volumes:
+      - media_data:/app/media
+      - static_data:/app/staticfiles
+    networks: [database, application]
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD, python, -c, "import os,urllib.request; r=urllib.request.Request('http://127.0.0.1:8000/health/',headers={'Host':os.environ['DJANGO_ALLOWED_HOSTS'].split(',')[0]}); urllib.request.urlopen(r,timeout=4)"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+      start_period: 60s
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+    restart: unless-stopped
+    logging: *logging
+  nginx:
+    build:
+      context: .
+      dockerfile: nginx/Dockerfile
+    environment:
+      DOMAIN: ${DOMAIN:?Set DOMAIN}
+      TLS_MODE: ${TLS_MODE:-https}
+      SECURE_HSTS_SECONDS: ${SECURE_HSTS_SECONDS:-3600}
+      SECURE_HSTS_INCLUDE_SUBDOMAINS: ${SECURE_HSTS_INCLUDE_SUBDOMAINS:-False}
+      SECURE_HSTS_PRELOAD: ${SECURE_HSTS_PRELOAD:-False}
+      NGINX_WORKER_PROCESSES: "2"
+    ports:
+      - "${HTTP_BIND_ADDRESS:-0.0.0.0}:${HTTP_PORT:-80}:80"
+      - "${HTTP_BIND_ADDRESS:-0.0.0.0}:${HTTPS_PORT:-443}:443"
+    volumes:
+      - media_data:/srv/media:ro
+      - static_data:/srv/static:ro
+      - certificates:/etc/letsencrypt:ro
+      - acme_webroot:/var/www/certbot:ro
+    networks: [application, public]
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: [CMD-SHELL, 'curl --fail --silent http://127.0.0.1:8081/nginx-health']
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    logging: *logging
+  certbot:
+    image: certbot/certbot:v5.8.0
+    profiles: [tools]
+    volumes:
+      - certificates:/etc/letsencrypt
+      - acme_webroot:/var/www/certbot
+    networks: [public]
+    logging: *logging
+networks:
+  database:
+    internal: true
+  application:
+    internal: true
+  public:
+volumes:
+  postgres_data:
+  media_data:
+  static_data:
+  certificates:
+  acme_webroot:
